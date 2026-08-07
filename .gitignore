@@ -1,0 +1,7 @@
+# Ignore binaries, compiled modules, and data outputs
+*.o
+*.mod
+wave2d
+*.dat
+.DS_Store
+

@@ -1,0 +1,32 @@
+knew=1
+know=3-knew
+
+
+! Initial conditions (analytical): 
+
+
+
+
+do it = 1, nsteps
+
+ ! 
+
+ know=knew    
+ knew=3-know   
+
+ kold=3-know  ! only used for rhs, essentially =knew, use kold for clarity
+
+ ! compute rhs at know: 
+ rhs(:,:,know) = ...
+
+ if it = 1
+  ! fwd Euler
+  u(:,:,knew) = u(:,:,know) + dt * rhs(:,:,know)
+ else
+  ! Adam Bashforth
+  u(:,:,knew) = u(:,:,know) + dt * (1.5*rhs(:,:know)-0.5*rhs(:,:,kold))
+ end if
+
+
+
+end do
