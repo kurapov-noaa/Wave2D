@@ -1,11 +1,11 @@
-subroutine write_his(hisname,u,nx,ny,nout,t)
+subroutine write_his(hisname,u,nx,ny,t)
 
   use netcdf
   implicit none
 
-  integer, intent(in) :: Nx, Ny,nout
+  integer, intent(in) :: Nx, Ny
   ! Nx+1 and N+1 are provided as inputs for variables that start from 0
-  real, intent(in) :: u(1:Nx, 1:Ny, :)
+  real, intent(in) :: u(nx,ny)
   real, intent(in) :: t                  ! output time
 
   character (len=*), intent(in) :: hisname
@@ -51,7 +51,7 @@ subroutine write_his(hisname,u,nx,ny,nout,t)
   !----------------------------------------------------
   ! Append fields at same record
   !----------------------------------------------------
-  status = nf90_put_var(ncid, vid_u, u(:,:,nout), start=(/1,1,rec/))
+  status = nf90_put_var(ncid, vid_u, u, start=(/1,1,rec/))
   if (status /= nf90_noerr) call abort_nc(status)
 
   !----------------------------------------------------

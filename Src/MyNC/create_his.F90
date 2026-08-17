@@ -24,10 +24,10 @@ subroutine create_his(hisname,Nx,Ny)
   !----------------------------------------------------
   ! Dimensions
   !----------------------------------------------------
-  status = nf90_def_dim(ncid, "xi_u", nx+1,  dim_xi)
+  status = nf90_def_dim(ncid, "xi_u", nx,  dim_xi)
   if (status /= nf90_noerr) call abort_nc(status)
 
-  status = nf90_def_dim(ncid, "eta_u",  ny+1, dim_eta)
+  status = nf90_def_dim(ncid, "eta_u",  ny, dim_eta)
   if (status /= nf90_noerr) call abort_nc(status)
 
   status = nf90_def_dim(ncid, "ocean_time", nf90_unlimited, dim_time)

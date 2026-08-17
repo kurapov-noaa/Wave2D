@@ -2,18 +2,20 @@ program wave2d_solver
     implicit none
 
     ! Grid Parameters (0 to Nx, 0 to Ny)
-    integer, parameter :: Nx = 100            ! Max grid index in x
-    integer, parameter :: Ny = 200            ! Max grid index in y
-    real, parameter :: dx = 2.0e3             ! Grid spacing dx = 2000 m
-    real, parameter :: dy = 2.0e3             ! Grid spacing dy = 2000 m
+    integer, parameter :: Nx = 1000            ! Max grid index in x
+    integer, parameter :: Ny = 2000            ! Max grid index in y
+    real, parameter :: dx = 2.0e3              ! Grid spacing
+    real, parameter :: dy = 2.0e3              ! Grid spacing
     
-    ! Domain Length / Fundamental Wavelength (u(0) = u(Nx-1))
-    real, parameter :: Lx = (Nx - 1) * dx     ! Domain size in x = 198,000 m
-    real, parameter :: Ly = (Ny - 1) * dy     ! Domain size in y = 198,000 m
+    ! The length of the periodic domain in each direction (max wave length) 
+    real, parameter :: Lx = (Nx - 1) * dx     
+    real, parameter :: Ly = (Ny - 1) * dy
 
     ! Derivative Inverse Multipliers
-    real, parameter :: odx2 = 1.0 / (2.0 * dx) ! 1 / (2*dx)
-    real, parameter :: ody2 = 1.0 / (2.0 * dy) ! 1 / (2*dy)
+    real, parameter :: odx = 1.0 / dx    ! 1 / dx
+    real, parameter :: ody = 1.0 / dy    ! 1 / dy
+    real, parameter :: odx2 = 0.5 * odx  ! 1 / (2*dx)
+    real, parameter :: ody2 = 0.5 * ody  ! 1 / (2*dy)
 
     ! Physical Parameters
     real, parameter :: Cx = 10.0              ! Coefficient Cx (m/s)
@@ -21,24 +23,30 @@ program wave2d_solver
 
     ! Time Stepping Parameters
     real, parameter :: dt = 40.0              ! Time step (s)
-    integer, parameter :: nstep = 50          ! Total number of time steps
+    integer, parameter :: nstep = 10000        ! Total number of time steps
 
     ! history file (place here, later will read from .in):
-    character (len=256), parameter :: hisname = "wave2D_his.nc"
+    character (len=256), parameter :: hisname = "../Wave2D_test/Exp01/wave2D_his.nc"
 
     ! Wave Parameters for Initial Condition
     real, parameter :: pi = 3.14159265
-    real, parameter :: kx = 2.0 * pi / Lx     ! Wave number in x
-    real, parameter :: ky = 2.0 * pi / Ly     ! Wave number in y
+    real, parameter :: kx = 2.* 2.0 * pi / Lx     ! Wave number in x
+    real, parameter :: ky = 1.* 2.0 * pi / Ly     ! Wave number in y
 
+    ! Staggered fluxes (ROMS style)
+    real, dimension(1:Nx, 0:Ny)     :: Fu   ! u-points (x-interfaces)
+    real, dimension(0:Nx, 1:Ny)     :: Fv   ! v-points (y-interfaces)
 
-    integer, parameter :: NHIS = 1
+    integer, parameter :: NHIS = 100
 
     ! State Variables & RHS Dual Buffers (0:Nx, 0:Ny indexing)
     real, dimension(0:Nx, 0:Ny, 2) :: u, rhs
     real :: t, dudx, dudy
     integer :: it, i, j
     integer :: know, knew, kold               ! Index pointers
+
+    ! dissipation parameter: 
+    real, parameter :: Ak = 2000.
 
     print '(A)', "----------------------------------------------------"
     print '(A)', " 2D Inviscid Wave Solver (Central Diff, Explicit Loops)"
@@ -80,8 +88,8 @@ program wave2d_solver
     u(0,  Ny, knew) = u(Nx-1, 1,    knew)
     u(Nx, Ny, knew) = u(1,    1,    knew)
 
-    call create_his(hisname,Nx+1,0,Ny+1)
-    call write_his(hisname,u,Nx+1,Ny+1,knew,0.)
+    call create_his(hisname,Nx+1,Ny+1)
+    call write_his(hisname,u(:,:,knew),Nx+1,Ny+1,t)
 
     ! -------------------------------------------------------------
     ! 2. Main Time Loop
@@ -97,6 +105,8 @@ program wave2d_solver
         ! ---------------------------------------------------------
         ! Compute RHS for INTERIOR points only (1 to Nx-1, 1 to Ny-1)
         ! ---------------------------------------------------------
+
+        ! Advection (also initialize rhs(:,:,know):
         do j = 1, Ny - 1
             do i = 1, Nx - 1
 
@@ -106,6 +116,28 @@ program wave2d_solver
                 rhs(i, j, know) = -Cx * dudx - Cy * dudy
 
             end do
+        end do
+
+        ! Add dissipation: 
+        do j = 1, Ny - 1
+         do i = 1, Nx
+          Fu(i, j) = Ak * (u(i, j, know) - u(i-1, j, know)) * odx
+         end do
+        end do
+
+        do j = 1, Ny
+         do i = 1, Nx - 1
+          Fv(i, j) = Ak * (u(i, j, know) - u(i, j-1, know)) * ody
+         end do
+        end do
+
+        do j = 1, Ny - 1
+         do i = 1, Nx - 1
+
+          rhs(i, j, know) = rhs(i, j, know) + &
+                          (Fu(i+1, j) - Fu(i, j)) * odx + &
+                          (Fv(i, j+1) - Fv(i, j)) * ody
+         end do
         end do
 
         ! ---------------------------------------------------------
@@ -148,7 +180,7 @@ program wave2d_solver
 
 
         if (mod(it,NHIS) == 0) then
-         call write_his(hisname,u,Nx+1,Ny+1,knew,t)
+         call write_his(hisname,u(:,:,knew),Nx+1,Ny+1,t)
         end if
 
     end do
