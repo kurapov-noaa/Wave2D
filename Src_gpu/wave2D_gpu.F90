@@ -1,9 +1,10 @@
-program wave2d_solver
+program wave2d_solver_gpu
+    use cudafor
     implicit none
 
     ! Grid Parameters (0 to Nx, 0 to Ny)
-    integer, parameter :: Nx = 1000            ! Max grid index in x
-    integer, parameter :: Ny = 2000            ! Max grid index in y
+    integer, parameter :: Nx = 6000            ! Max grid index in x
+    integer, parameter :: Ny = 12000            ! Max grid index in y
     real, parameter :: dx = 2.0e3              ! Grid spacing
     real, parameter :: dy = 2.0e3              ! Grid spacing
     
@@ -26,27 +27,33 @@ program wave2d_solver
     integer, parameter :: nstep = 10000        ! Total number of time steps
 
     ! history file (place here, later will read from .in):
-    character (len=256), parameter :: hisname = "../Wave2D_test/Exp01/wave2D_his.nc"
+    character (len=256), parameter :: hisname = "wave2D_his.nc"
 
     ! Wave Parameters for Initial Condition
     real, parameter :: pi = 3.14159265
     real, parameter :: kx = 2.* 2.0 * pi / Lx     ! Wave number in x
     real, parameter :: ky = 1.* 2.0 * pi / Ly     ! Wave number in y
 
-    ! Staggered fluxes (ROMS style)
-    real, dimension(1:Nx, 0:Ny)     :: Fu   ! u-points (x-interfaces)
-    real, dimension(0:Nx, 1:Ny)     :: Fv   ! v-points (y-interfaces)
+    integer, parameter :: NHIS = 10001
 
-    integer, parameter :: NHIS = 100
-
-    ! State Variables & RHS Dual Buffers (0:Nx, 0:Ny indexing)
-    real, dimension(0:Nx, 0:Ny, 2) :: u, rhs
-    real :: t, dudx, dudy
+    real :: t  !, dudx, dudy
     integer :: it, i, j
     integer :: know, knew, kold               ! Index pointers
 
     ! dissipation parameter: 
     real, parameter :: Ak = 2000.
+
+    !!!!!!!!!!!!!
+    ! Define arrays: 
+    real, dimension(1:Nx, 0:Ny)     :: Fu   ! u-points (x-interfaces)
+    real, dimension(0:Nx, 1:Ny)     :: Fv   ! v-points (y-interfaces)
+    real, dimension(0:Nx, 0:Ny, 2) :: u, rhs
+
+    real, device :: Fu_d(1:Nx, 0:Ny)        ! u-points (x-interfaces)
+    real, device :: Fv_d(0:Nx, 1:Ny)          ! v-points (y-interfaces)
+    real, device :: u_d(0:Nx, 0:Ny, 2), rhs_d(0:Nx, 0:Ny, 2)
+
+    real :: tcpu1,tcpu2
 
     print '(A)', "----------------------------------------------------"
     print '(A)', " 2D Inviscid Wave Solver (Central Diff, Explicit Loops)"
@@ -94,9 +101,17 @@ program wave2d_solver
     ! -------------------------------------------------------------
     ! 2. Main Time Loop
     ! -------------------------------------------------------------
+
+    Fu_d = 0.
+    Fv_d = 0.
+    u_d = u
+    rhs_d = 0.
+
+    call cpu_time(tcpu1)
+    
     do it = 1, nstep
 
-        t = dt*it
+!        t = dt*it
 
         know = knew
         knew = 3 - know
@@ -106,84 +121,112 @@ program wave2d_solver
         ! Compute RHS for INTERIOR points only (1 to Nx-1, 1 to Ny-1)
         ! ---------------------------------------------------------
 
-        ! Advection (also initialize rhs(:,:,know):
+        !- Advection (also initialize rhs(:,:,know):
+
+        !$cuf kernel do (2) <<<*,*>>>        
         do j = 1, Ny - 1
             do i = 1, Nx - 1
 
-                dudx = (u(i+1, j, know) - u(i-1, j, know)) * odx2
-                dudy = (u(i, j+1, know) - u(i, j-1, know)) * ody2
+!                dudx = (u(i+1, j, know) - u(i-1, j, know)) * odx2
+!                dudy = (u(i, j+1, know) - u(i, j-1, know)) * ody2
 
-                rhs(i, j, know) = -Cx * dudx - Cy * dudy
+                rhs_d(i, j, know) = - Cx * (u_d(i+1, j, know) - u_d(i-1, j, know)) * odx2  & 
+                                    - Cy * (u_d(i, j+1, know) - u_d(i, j-1, know)) * ody2
 
             end do
         end do
+        i = cudaDeviceSynchronize ()
 
-        ! Add dissipation: 
+
+        !- Add dissipation: 
+
+        !$cuf kernel do (2) <<<*,*>>>
         do j = 1, Ny - 1
          do i = 1, Nx
-          Fu(i, j) = Ak * (u(i, j, know) - u(i-1, j, know)) * odx
+          Fu_d(i, j) = Ak * (u_d(i, j, know) - u_d(i-1, j, know)) * odx
          end do
         end do
-
+  
+        !$cuf kernel do (2) <<<*,*>>>
         do j = 1, Ny
          do i = 1, Nx - 1
-          Fv(i, j) = Ak * (u(i, j, know) - u(i, j-1, know)) * ody
+          Fv_d(i, j) = Ak * (u_d(i, j, know) - u_d(i, j-1, know)) * ody
          end do
         end do
+        i = cudaDeviceSynchronize ()
 
+        !$cuf kernel do (2) <<<*,*>>>
         do j = 1, Ny - 1
          do i = 1, Nx - 1
 
-          rhs(i, j, know) = rhs(i, j, know) + &
-                          (Fu(i+1, j) - Fu(i, j)) * odx + &
-                          (Fv(i, j+1) - Fv(i, j)) * ody
+          rhs_d(i, j, know) = rhs_d(i, j, know) + &
+                          (Fu_d(i+1, j) - Fu_d(i, j)) * odx + &
+                          (Fv_d(i, j+1) - Fv_d(i, j)) * ody
+
          end do
         end do
+        i = cudaDeviceSynchronize ()
 
         ! ---------------------------------------------------------
         ! Update u(:,:,knew) for INTERIOR points using explicit loops
         ! ---------------------------------------------------------
         if (it == 1) then
             ! Step 1: Forward Euler
+          
+            !$cuf kernel do (2) <<<*,*>>>
             do j = 1, Ny - 1
                 do i = 1, Nx - 1
-                    u(i, j, knew) = u(i, j, know) + dt * rhs(i, j, know)
+                    u_d(i, j, knew) = u_d(i, j, know) + dt * rhs_d(i, j, know)
                 end do
             end do
+!            i = cudaDeviceSynchronize ()
+
         else
             ! Steps 2..N: Adams-Bashforth 2
+
+            !$cuf kernel do (2) <<<*,*>>>
             do j = 1, Ny - 1
                 do i = 1, Nx - 1
-                    u(i, j, knew) = u(i, j, know) + dt * (1.5 * rhs(i, j, know) - 0.5 * rhs(i, j, kold))
+                    u_d(i, j, knew) = u_d(i, j, know) +             &
+                                       dt * (1.5 * rhs_d(i, j, know) - 0.5 * rhs_d(i, j, kold))
                 end do
             end do
+!            i = cudaDeviceSynchronize ()
         end if
 
         ! ---------------------------------------------------------
         ! Apply Double Periodic Boundary Conditions via Explicit Loops
         ! ---------------------------------------------------------
+
+        !$cuf kernel do (1) <<<*,*>>>        
         do j = 1, Ny - 1
-            u(0,  j, knew) = u(Nx-1, j, knew)
-            u(Nx, j, knew) = u(1,    j, knew)
+            u_d(0,  j, knew) = u_d(Nx-1, j, knew)
+            u_d(Nx, j, knew) = u_d(1,    j, knew)
         end do
 
+        !$cuf kernel do (1) <<<*,*>>>
         do i = 1, Nx - 1
-            u(i, 0,  knew) = u(i, Ny-1, knew)
-            u(i, Ny, knew) = u(i, 1,    knew)
+            u_d(i, 0,  knew) = u_d(i, Ny-1, knew)
+            u_d(i, Ny, knew) = u_d(i, 1,    knew)
         end do
 
         ! Corner Points
-        u(0,  0,  knew) = u(Nx-1, Ny-1, knew)
-        u(Nx, 0,  knew) = u(1,    Ny-1, knew)
-        u(0,  Ny, knew) = u(Nx-1, 1,    knew)
-        u(Nx, Ny, knew) = u(1,    1,    knew)
-
+        u_d(0,  0,  knew) = u_d(Nx-1, Ny-1, knew)
+        u_d(Nx, 0,  knew) = u_d(1,    Ny-1, knew)
+        u_d(0,  Ny, knew) = u_d(Nx-1, 1,    knew)
+        u_d(Nx, Ny, knew) = u_d(1,    1,    knew)
 
         if (mod(it,NHIS) == 0) then
+         u(:,:,knew) = u_d(:,:,knew)
+         t=dt*it
          call write_his(hisname,u(:,:,knew),Nx+1,Ny+1,t)
         end if
 
     end do
+    
+    call cpu_time(tcpu2)
+    write (*,*) 'tcpu2-tcpu1=',tcpu2-tcpu1
 
-end program wave2d_solver
+
+end program wave2d_solver_gpu
 
